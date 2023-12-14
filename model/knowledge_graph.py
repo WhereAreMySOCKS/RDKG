@@ -32,24 +32,24 @@ class KnowledgeGraph(object):
             for head_id, eids in enumerate(data):
                 if len(eids) <= 0:
                     continue
-                eids = set(sum(eids, []))
+                eids = list(set(eids))
                 for eid in eids:
                     et_type = get_entity_tail(HAVE_SYMPTOM, relation, dataset_name)
                     self._add_edge(HAVE_SYMPTOM, head_id, relation, et_type, eid)
                     num_edges += 2
             print('Total {:d} {:s} edges.'.format(num_edges, relation))
 
-    def _load_reviews(self, dataset, ):
-        print('Load reviews...')
+    def _load_reviews(self, dataset):
+        print('Load train_dataset...')
         #  Filter words by both tfidf and frequency.
         vocab = dataset.word.vocab
         num_edges = 0
         all_removed_words = []
         all_remained_words = []
-        for rid, data in enumerate(dataset.review.data):
-            uid, pid, review, _ = data
-            remained_words = [wid for wid in set(review)]
-            removed_words = set(review).difference(remained_words)  # only for visualize
+        for rid, data in enumerate(dataset.train_data.data):
+            sym_id, dis_id, words = data[0], data[1], data[2]
+            remained_words = [wid for wid in set(words)]
+            removed_words = set(words).difference(remained_words)  # only for visualize
             removed_words = [vocab[wid] for wid in removed_words]
             _remained_words = [vocab[wid] for wid in remained_words]
             all_removed_words.append(removed_words)
@@ -57,13 +57,13 @@ class KnowledgeGraph(object):
             if len(remained_words) <= 0:
                 continue
             # Add edges.
-            self._add_edge(HAVE_SYMPTOM, uid, DISEASE_SYMPTOM, HAVE_DISEASE, pid)
+            self._add_edge(HAVE_SYMPTOM, sym_id, DISEASE_SYMPTOM, HAVE_DISEASE, dis_id)
             num_edges += 2
             for wid in remained_words:
-                self._add_edge(HAVE_SYMPTOM, uid, MENTION, WORD, wid)
-                self._add_edge(HAVE_DISEASE, pid, DESCRIBED_AS, WORD, wid)
+                self._add_edge(HAVE_SYMPTOM, sym_id, MENTION, WORD, wid)
+                self._add_edge(HAVE_DISEASE, dis_id, DESCRIBED_AS, WORD, wid)
                 num_edges += 4
-        print('Total {:d} review edges.'.format(num_edges))
+        print('Total {:d} words edges.'.format(num_edges))
 
     def _load_knowledge(self, dataset, dataset_name):
         for relation in [DISEASE_SYMPTOM, DISEASE_SURGERY, DISEASE_DRUG, RELATED_DISEASE]:

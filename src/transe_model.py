@@ -28,7 +28,7 @@ class KnowledgeEmbedding(nn.Module):
         self.l2_lambda = args.l2_lambda
         self.relu = nn.ReLU()
         if args.dataset == Aier_EYE:
-            self.attributes_num = dataset.attribute.vocab_size
+            self.attributes_num = dataset.word.vocab_size
         self.enhanced_type = args.enhanced_type
         self.embedding_type = args.embedding_type
 
@@ -68,7 +68,7 @@ class KnowledgeEmbedding(nn.Module):
             have_disease=edict(vocab_size=dataset.have_disease.vocab_size),
             have_symptom=edict(vocab_size=dataset.have_symptom.vocab_size),
             surgery=edict(vocab_size=dataset.surgery.vocab_size),
-            medicine=edict(vocab_size=dataset.medicine.vocab_size),
+            drug=edict(vocab_size=dataset.drug.vocab_size),
             word=edict(vocab_size=dataset.word.vocab_size)
         )
 
@@ -80,19 +80,18 @@ class KnowledgeEmbedding(nn.Module):
         self.relations = edict(
             mentions=edict(
                 et='word',
-                et_distrib=self._make_distrib(dataset.review.word_distrib)),
+                et_distrib=self._make_distrib(dataset.train_data.word_distrib)),
             described_as=edict(
                 et='word',
-                et_distrib=self._make_distrib(dataset.review.word_distrib)),
-            #   这里头尾实体顺序进行了更改
+                et_distrib=self._make_distrib(dataset.train_data.word_distrib)),
             disease_symptom=edict(
                 et='have_disease',
-                et_distrib=self._make_distrib(dataset.review.have_disease_uniform_distrib)),
+                et_distrib=self._make_distrib(dataset.train_data.have_disease_uniform_distrib)),
             disease_surgery=edict(
                 et='surgery',
                 et_distrib=self._make_distrib(dataset.disease_surgery.et_distrib)),
             disease_drug=edict(
-                et='medicine',
+                et='drug',
                 et_distrib=self._make_distrib(dataset.disease_drug.et_distrib)),
             related_symptom=edict(
                 et='have_symptom',
@@ -116,7 +115,6 @@ class KnowledgeEmbedding(nn.Module):
                 embed = self._relation_embedding()
                 setattr(self, r + '_hype', embed)
 
-        self.to(args.device)
 
     def _get_attribute_vec(self, attributes, embed_type):
         attributes_idxs = attributes[0]
@@ -168,7 +166,7 @@ class KnowledgeEmbedding(nn.Module):
 
     def _make_distrib(self, distrib):
         """Normalize input numpy vector to distribution."""
-        distrib = np.power(np.array(distrib, dtype=np.float), 0.75)
+        distrib = np.power(np.array(distrib, dtype=float), 0.75)
         distrib = distrib / distrib.sum()
         distrib = torch.FloatTensor(distrib).to(self.device)
         return distrib
@@ -178,19 +176,15 @@ class KnowledgeEmbedding(nn.Module):
         return loss
 
     def compute_loss(self, batch_idxs):
-        """Compute knowledge graph negative sampling loss.
-        batch_idxs: batch_size * 6 array, where each row is
-                (u_id, p_id, w_id, b_id, c_id, rp_id).
-        """
         have_symptom_idxs = batch_idxs[:, 0]
         have_disease_idxs = batch_idxs[:, 1]
         word_idxs = batch_idxs[:, 2]
         surgery_idxs = batch_idxs[:, 3]
-        medicine_idxs = batch_idxs[:, 4]
+        drug_idxs = batch_idxs[:, 4]
         related_disease_idxs = batch_idxs[:, 5]
         relate_symptom_idxs = batch_idxs[:, 6]
-        attribute_idxs = np.array(batch_idxs[:, 7].tolist())
-        attribute_texts = batch_idxs[:, 8].tolist()
+        attribute_texts = np.array(batch_idxs[:, 7].tolist())
+        attribute_idxs = batch_idxs[:, 8].tolist()
 
         regularizations = []
 
@@ -219,9 +213,9 @@ class KnowledgeEmbedding(nn.Module):
         regularizations.extend(pb_embeds)
         loss += pb_loss
 
-        # have_disease + disease_drug -> medicine
-        pc_loss, pc_embeds = self.neg_loss('have_disease', 'disease_drug', 'medicine', have_disease_idxs,
-                                           medicine_idxs, (attribute_idxs, attribute_texts))
+        # have_disease + disease_drug -> drug
+        pc_loss, pc_embeds = self.neg_loss('have_disease', 'disease_drug', 'drug', have_disease_idxs,
+                                           drug_idxs, (attribute_idxs, attribute_texts))
 
         regularizations.extend(pc_embeds)
         loss += pc_loss
@@ -255,21 +249,21 @@ class KnowledgeEmbedding(nn.Module):
             torch.from_numpy(entity_tail_idxs.astype(int)).to(self.device))
         batch_size = entity_head_vec.size(0)
         if entity_head == HAVE_SYMPTOM:
-            attr_vec = self._get_attribute_vec(attributes, self.model_type)
+            attr_vec = self._get_attribute_vec(attributes, self.enhanced_type)
             entity_head_vec += attr_vec
 
         else:
             zeros = (np.zeros((batch_size, attr_num), dtype=int), '无记录')
-            attr_vec = self._get_attribute_vec(zeros, self.model_type)
+            attr_vec = self._get_attribute_vec(zeros, self.enhanced_type)
             entity_head_vec += attr_vec
 
         if entity_tail == HAVE_SYMPTOM:
-            attr_vec = self._get_attribute_vec(attributes, self.model_type)
+            attr_vec = self._get_attribute_vec(attributes, self.enhanced_type)
             entity_tail_vec += attr_vec
 
         else:
             zeros = (np.zeros((batch_size, attr_num), dtype=int), [[''] * attr_num])
-            attr_vec = self._get_attribute_vec(zeros, self.model_type)
+            attr_vec = self._get_attribute_vec(zeros, self.enhanced_type)
             entity_tail_vec += attr_vec
 
         relation_vec = getattr(self, relation)  # [1, embed_size]
@@ -277,7 +271,7 @@ class KnowledgeEmbedding(nn.Module):
         entity_tail_distrib = self.relations[relation].et_distrib  # [vocab_size]
         neg_sample_idx = torch.multinomial(entity_tail_distrib, self.num_neg_samples, replacement=True).view(-1)
         zeros = (np.zeros((len(neg_sample_idx), attr_num), dtype=int), '无记录')
-        neg_vec = entity_tail_embedding(neg_sample_idx) + self._get_attribute_vec(zeros, self.model_type)
+        neg_vec = entity_tail_embedding(neg_sample_idx) + self._get_attribute_vec(zeros, self.enhanced_type)
         relation_bias = relation_bias_embedding(torch.from_numpy(entity_tail_idxs.astype(int)).to(self.device)).squeeze(1)
         #   先属性嵌入，再TranR映射
         if self.embedding_type == 'TransR':

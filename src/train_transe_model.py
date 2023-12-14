@@ -3,12 +3,11 @@ import os
 import argparse
 import jieba
 import torch.optim
+from gensim.models import KeyedVectors
 from transformers import AutoTokenizer
-
-from model.kgEmbedding import CustomBertModel
+from transe_model import KnowledgeEmbedding
 from utils import *
 from data_utils import DataLoader
-from model.transe_model import KnowledgeEmbedding
 
 logger = None
 
@@ -16,8 +15,8 @@ logger = None
 def train(args):
     dataset = load_dataset(args.dataset)
     dataloader = DataLoader(dataset, args.batch_size, args.dataset)
-    words_to_train = args.epochs * dataset.review.word_count + 1
-    model = CustomBertModel(dataset, args).to(args.device)
+    words_to_train = args.epochs * dataset.train_data.word_count + 1
+    model = KnowledgeEmbedding(dataset, args).to(args.device)
 
     if args.enhanced_type == 'bert':
         #     分层训练
@@ -78,7 +77,7 @@ def extract_embeddings(args):
         HAVE_DISEASE: state_dict['have_disease.weight'].cpu().data.numpy(),
         HAVE_SYMPTOM: state_dict['have_symptom.weight'].cpu().data.numpy(),
         SURGERY: state_dict['surgery.weight'].cpu().data.numpy(),
-        MEDICINE: state_dict['medicine.weight'].cpu().data.numpy(),
+        DRUG: state_dict['drug.weight'].cpu().data.numpy(),
         WORD: state_dict['word.weight'].cpu().data.numpy(),
         DISEASE_SYMPTOM: [
             state_dict['disease_symptom'].cpu().data.numpy()[0],
@@ -130,7 +129,7 @@ def extract_embeddings(args):
             'related_symptom_hype': state_dict['related_symptom_hype'].cpu().data.numpy(),
                        })
 
-    if args.model_type == 'atten':
+    if args.enhanced_type == 'atten':
         embeds.update({
             'attribute': state_dict['attribute.weight'].cpu().data.numpy(),
             'WK.weight': state_dict['WK.weight'].cpu().data.numpy(),
@@ -139,7 +138,7 @@ def extract_embeddings(args):
             'WK.bias': state_dict['WK.bias'].cpu().data.numpy(),
             'WQ.bias': state_dict['WQ.bias'].cpu().data.numpy(),
             'WV.bias': state_dict['WV.bias'].cpu().data.numpy(), })
-    elif args.model_type == 'bert':
+    elif args.enhanced_type == 'bert':
         with open('data/dictionary/attribute.txt', 'rb') as f:
             attribute = pickle.load(f)
         #     保存bert生成的embedding
@@ -161,9 +160,9 @@ def extract_embeddings(args):
             out = bert(bert_input['input_ids'], bert_input['attention_mask'])[1].detach().cpu().numpy()
             attr_vec = np.dot(out, pooler.T) + pooler_b
             embeds.update({'bert_attr_vec': attr_vec, })
-    elif args.model_type == 'embedding':
+    elif args.enhanced_type == 'embedding':
         embeds.update({'attribute': state_dict['attribute.weight'].cpu().data.numpy()})
-    elif args.model_type == 'w2v':
+    elif args.enhanced_type == 'w2v':
         with open('data/dictionary/attribute.txt', 'rb') as f:
             attribute = list(pickle.load(f).keys())
         attribute = [attribute[-1]] + attribute[:-1]
@@ -196,13 +195,13 @@ def main():
     parser.add_argument('--gpu', type=str, default='2', help='gpu device.')
     parser.add_argument('--epochs', type=int, default=800, help='number of epochs to train.')
     parser.add_argument('--batch_size', type=int, default=128, help='batch size.')
-    parser.add_argument('--enhanced_type', type=str, default='none', help='model type.none,embedding,w2v')
+    parser.add_argument('--enhanced_type', type=str, default='none', help='model type. Including none,embedding,w2v')
     parser.add_argument('--lr', type=float, default=0.2, help='learning rate.')
     parser.add_argument('--weight_decay', type=float, default=0, help='weight decay for adam.')
     parser.add_argument('--l2_lambda', type=float, default=0, help='l2 lambda')
     parser.add_argument('--max_grad_norm', type=float, default=10.0, help='Clipping gradient.')
     parser.add_argument('--embed_size', type=int, default=100, help='knowledge embedding size.')
-    parser.add_argument('--num_neg_samples', type=int, default=10。, help='number of negative samples.')
+    parser.add_argument('--num_neg_samples', type=int, default=10, help='number of negative samples.')
     parser.add_argument('--steps_per_checkpoint', type=int, default=1000, help='Number of steps for checkpoint.')
     parser.add_argument('--embedding_type', type=str, default='TransE',
                         help='Embedding model type,TransR,TransE or TransH')

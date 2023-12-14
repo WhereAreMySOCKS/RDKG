@@ -13,17 +13,17 @@ class AierEyeDataset(object):
         if not self.data_dir.endswith('/'):
             self.data_dir += '/'
         if data_dir == 'Medical':
-            self.review_file = 'medical_data/tmp/medical_data/' + set_name + '.pkl'
+            self.train_file = 'medical_data/tmp/medical_data/' + set_name + '.pkl'
         else:
-            self.review_file = '../data/processed_data/' + set_name + '.pkl'
+            self.train_file = '../data/processed_data/' + set_name + '.pkl'
         self.load_entities()
         self.load_disease_relations()
-        self.load_reviews()
+        self.load_train_data()
         self.create_word_sampling_rate(word_sampling_rate)
 
         self.load_sympotms_relations()
         if self.data_dir == './raw_data/Aier_Eye':
-            self.load_attribute()
+            self.load_info()
 
     def _load_file(self, filename):
         with open(filename, 'rb') as f:
@@ -47,7 +47,7 @@ class AierEyeDataset(object):
                 have_disease='medical_data/dictionary/疾病有.pkl',
                 have_symptom='medical_data/dictionary/症状有.pkl',
                 surgery='medical_data/dictionary/手术.pkl',
-                medicine='medical_data/dictionary/药物有.pkl',
+                drug='medical_data/dictionary/药物有.pkl',
                 word='medical_data/dictionary/word.pkl',
             )
         else:
@@ -55,23 +55,22 @@ class AierEyeDataset(object):
                 have_disease='../data/processed_data/disease.pkl',
                 have_symptom='../data/processed_data/symptom.pkl',
                 surgery='../data/processed_data/surgery.pkl',
-                medicine='../data/processed_data/drug.pkl',
-                word='../data/processed_data/text.pkl',
+                drug='../data/processed_data/drug.pkl',
+                word='../data/processed_data/word.pkl',
             )
         for name in entity_files:
             vocab = self._load_file(entity_files[name])
             setattr(self, name, edict(vocab=vocab, vocab_size=len(vocab)))
             print('Load', name, 'of size', len(vocab))
 
-    def load_attribute(self):
+    def load_info(self):
         """
-        从picke文件中读取3个主要属性：
-        ‘疾病无’，‘症状无’，‘检查结果阳性’并全部保存为 self.attribute
+        从picke文件中读取既往病史（textual_info）：
         """
 
-        vocab = self._load_file('data/dictionary/attribute.pkl')
+        vocab = self._load_file('../data/processed_data/info.pkl')
         vocab_size = len(vocab)
-        setattr(self, 'attribute', edict(vocab=vocab, vocab_size=len(vocab)))
+        setattr(self, 'info', edict(vocab=vocab, vocab_size=len(vocab)))
         print('Load attribute of size', vocab_size)
 
     def load_sympotms_relations(self):
@@ -93,42 +92,33 @@ class AierEyeDataset(object):
             relation.data.append(knowledge)
         setattr(self, 'related_symptom', relation)
 
-    def load_reviews(self):
-        """Load text from train/test raw_data files.
-            Create member variable `review` associated with following attributes:
-            - `raw_data`: list of tuples (user_idx, product_idx, [word_idx...]).
-            - `size`: number of reviews.
-            - `product_distrib`: product vocab frequency among all eviews.
-            - `product_uniform_distrib`: product vocab frequency (all 1's)
-            - `word_distrib`: word vocab frequency among all reviews.
-            - `word_count`: number of words (including duplicates).
-            - `review_distrib`: always 1.
-            """
+    def load_train_data(self):
 
-        review_data = []  # (have_symptom_idx, have_disease_idx, [word1_idx,...,wordn_idx])
+        train_data = []  # (have_symptom_idx, have_disease_idx, [word1_idx,...,wordn_idx])
         have_disease_distrib = np.zeros(self.have_disease.vocab_size)
         word_distrib = np.zeros(self.word.vocab_size)
         word_count = 0
-        for line in self._load_file(self.review_file):
-            attr = line[3]
-            word_indices = line[2]
+        for line in self._load_file(self.train_file):
+            info_id = line[3]
+            textual_info = line[4]
+            chief_complaint_words = line[2]
             for i in range(len(line[0])):
                 for j in range(len(line[1])):
-                    review_data.append((line[0][i], line[1][j], word_indices, attr))
+                    train_data.append((line[0][i], line[1][j], chief_complaint_words, info_id, textual_info))
                     have_disease_distrib[line[1][j]] += 1
-            for wi in word_indices:
+            for wi in chief_complaint_words:
                 word_distrib[wi] += 1
-            word_count += len(word_indices)
-        self.review = edict(
-            data=review_data,
-            size=len(review_data),
+            word_count += len(chief_complaint_words)
+        self.train_data = edict(
+            data=train_data,
+            size=len(train_data),
             have_diseas_distrib=have_disease_distrib,
             have_disease_uniform_distrib=np.ones(self.have_disease.vocab_size),
             word_distrib=word_distrib,
             word_count=word_count,
-            review_distrib=np.ones(len(review_data))  # set to 1 now
+            train_data_distrib=np.ones(len(train_data))  # set to 1 now
         )
-        print('Load review of size', self.review.size, 'word count=', word_count)
+        print('Load train_data of size', self.train_data.size, 'word count=', word_count)
 
     def load_disease_relations(self):
         """
@@ -137,7 +127,7 @@ class AierEyeDataset(object):
                   Load 4 disease -> ? relations:
               - `disease_symptoms `: disease -> symptoms,
               - `disease_surgery `: disease -> surgery,
-              - `disease_drugs `: disease -> medicine,
+              - `disease_drugs `: disease -> drug,
               - `related_disease `: disease -> disease,
 
               Create member variable for each relation associated with following attributes:
@@ -150,7 +140,7 @@ class AierEyeDataset(object):
             product_relations = edict(
                 disease_symptom=('medical_data/relation/disease_symptom_tail.pkl', self.have_symptom),
                 disease_surgery=('medical_data/relation/disease_surgery_tail.pkl', self.surgery),
-                disease_drug=('medical_data/relation/disease_drugs_tail.pkl', self.medicine),
+                disease_drug=('medical_data/relation/disease_drugs_tail.pkl', self.drug),
                 related_disease=('medical_data/relation/related_disease_tail.pkl', self.have_disease),
 
             )
@@ -158,7 +148,7 @@ class AierEyeDataset(object):
             product_relations = edict(
                 disease_symptom=('../data/processed_data/disease_symptom.pkl', self.have_symptom),
                 disease_surgery=('../data/processed_data/disease_surgery.pkl', self.surgery),
-                disease_drug=('../data/processed_data/disease_drug.pkl', self.medicine),
+                disease_drug=('../data/processed_data/disease_drug.pkl', self.drug),
                 related_disease=('../data/processed_data/disease_disease.pkl', self.have_disease),
 
             )
@@ -187,13 +177,13 @@ class AierEyeDataset(object):
         self.word_sampling_rate = np.ones(self.word.vocab_size)
         if sampling_threshold <= 0:
             return
-        threshold = sum(self.review.word_distrib) * sampling_threshold
+        threshold = sum(self.train_data.word_distrib) * sampling_threshold
         for i in range(self.word.vocab_size):
-            if self.review.word_distrib[i] == 0:
+            if self.train_data.word_distrib[i] == 0:
                 continue
             self.word_sampling_rate[i] = min(
-                (np.sqrt(float(self.review.word_distrib[i]) / threshold) + 1) * threshold / float(
-                    self.review.word_distrib[i]), 1.0)
+                (np.sqrt(float(self.train_data.word_distrib[i]) / threshold) + 1) * threshold / float(
+                    self.train_data.word_distrib[i]), 1.0)
 
 
 class DataLoader(object):
@@ -203,83 +193,70 @@ class DataLoader(object):
         self.dataset = dataset
         self.dataset_name = dataset_name
         self.batch_size = batch_size
-        self.review_size = self.dataset.review.size
-        self.have_disease_relations = ['disease_surgery', 'disease_drug', 'related_disease', ]
+        self.train_data_size = self.dataset.train_data.size
+        self.have_disease_relations = ['disease_surgery', 'disease_drug', 'related_disease']
         self.related_symptom = ['related_symptom']
-        self.entity_dic = pickle.load(open('../data/processed_data/entity.pkl', 'rb'))
-        self.text_dic = pickle.load(open('../data/processed_data/text.pkl', 'rb'))
+        # self.entity_dic = pickle.load(open('../data/processed_data/entity.pkl', 'rb'))
+        self.text_dic = pickle.load(open('../data/processed_data/word.pkl', 'rb'))
         self.finished_word_num = 0
         self.reset()
 
     def reset(self):
-        # Shuffle reviews order
-        self.review_seq = np.random.permutation(self.review_size)
-        self.cur_review_i = 0
+        self.train_data_seq = np.random.permutation(self.train_data_size)
+        self.cur_train_data_i = 0
         self.cur_word_i = 0
         self._has_next = True
 
     @property
     def get_batch(self):
-        """Return a matrix of [batch_size x 6], where each row contains
-        (have_symptom_idx, have_disease_idx, word_id, surgery_id, medicine_id
-        , related_disease_idx,pos_exam,no_symptom,no_disease).
+        """
+        每个batch中的数据为[症状，疾病，疾病手术，疾病药物，相关疾病，相关症状，既往史，既往史编号]
         """
         batch = []
-        record_idx = self.review_seq[self.cur_review_i]
-        have_symptom_idx, have_disease_idx, word, attribute_text = self.dataset.review.data[
-            record_idx]
+        record_idx = self.train_data_seq[self.cur_train_data_i]
+        have_symptom_idx, have_disease_idx, word, info_id, textual_info = self.dataset.train_data.data[record_idx]
         have_disease_knowledge = {pr: getattr(self.dataset, pr).data[have_disease_idx] for pr in
                                   self.have_disease_relations}
         related_symptom_knowledge = {pr: getattr(self.dataset, pr).data[have_symptom_idx] for pr in
                                      self.related_symptom}
-        have_disease_knowledge.update({'attribute_text': attribute_text, })
 
         while len(batch) < self.batch_size:
             # 1) Sample the word
             word_idx = word[self.cur_word_i]
             if random.random() < self.dataset.word_sampling_rate[word_idx]:
-                data = [self.entity_dic['症状有'][have_symptom_idx], self.entity_dic['疾病有'][have_disease_idx],
-                        self.text_dic[word_idx]]
+                data = [have_symptom_idx, have_disease_idx, word_idx]
                 for pr in self.have_disease_relations:
                     if len(have_disease_knowledge[pr]) <= 0:
                         data.append(0)
                     else:
-                        if pr == 'disease_surgery':
-                            data.append(self.entity_dic['手术'][random.choice(have_disease_knowledge[pr])])
-                        elif pr == 'disease_drug':
-                            data.append(self.entity_dic['药物有'][random.choice(have_disease_knowledge[pr])])
-                        elif pr == 'related_disease':
-                            rc = list(set(have_disease_knowledge[pr]) - {have_disease_idx})
-                            if rc:
-                                data.append(self.entity_dic['疾病有'][random.choice(rc)])
-                            else:
-                                data.append(0)
+                        data.append(random.choice(have_disease_knowledge[pr]))
                 for pr in self.related_symptom:
-                    rc = list(set(related_symptom_knowledge[pr]) - {have_symptom_idx})
-                    if len(rc) > 0:
-                        data.append(self.entity_dic['症状有'][random.choice(rc)])
-                    else:
+                    if len(related_symptom_knowledge[pr]) <= 0:
                         data.append(0)
-                data.append(attribute_text)
+                    else:
+                        data.append(random.choice(related_symptom_knowledge[pr]))
+                data.append(textual_info[0])
+                data.append(info_id[0])
                 batch.append(data)
 
-            # 2) Move to next word/review
+            # 2) Move to next word/train_data
             self.cur_word_i += 1
             self.finished_word_num += 1
             if self.cur_word_i >= len(word):
-                self.cur_review_i += 1
-                if self.cur_review_i >= self.review_size:
+                self.cur_train_data_i += 1
+                if self.cur_train_data_i >= self.train_data_size:
                     self._has_next = False
                     break
                 self.cur_word_i = 0
-                review_idx = self.review_seq[self.cur_review_i]
-                have_symptom_idx, have_disease_idx, word, attribute_text = self.dataset.review.data[review_idx]
+                train_data_idx = self.train_data_seq[self.cur_train_data_i]
+                have_symptom_idx, have_disease_idx, word, info_id,textual_info = self.dataset.train_data.data[train_data_idx]
                 have_disease_knowledge = {pr: getattr(self.dataset, pr).data[have_disease_idx] for pr in
                                           self.have_disease_relations}
-                have_disease_knowledge.update(
-                    {'attribute_text': attribute_text})
+                related_symptom_knowledge = {pr: getattr(self.dataset, pr).data[have_symptom_idx] for pr in
+                                             self.related_symptom}
+
         random.shuffle(batch)
-        return batch
+        return np.array(batch)
 
     def has_next(self):
         """Has next batch."""
