@@ -2,10 +2,10 @@ import argparse
 import jieba
 import json
 from tqdm import tqdm
-from src.data_utils import AierEyeDataset
+from rdkg.src.data_utils import AierEyeDataset
 from utils import *
 import os
-from model.knowledge_graph import KnowledgeGraph
+from rdkg.model.knowledge_graph import KnowledgeGraph
 
 # Entities
 HAVE_DISEASE = '疾病有'
@@ -68,9 +68,8 @@ def text_process(text):
         text_clean.append(tmp)
     uni_words = sorted(set([j for i in text_clean for j in i]))
     entities2int = {}
-    #     记录词表，词序号从1开始
     for i in range(len(uni_words)):
-        entities2int['%s' % uni_words[i]] = i + 1
+        entities2int['%s' % uni_words[i]] = i
     entities2int[''] = 0
     int_text = []
     #   将clean的主诉转换成index
@@ -95,9 +94,8 @@ def entity_process(entity):
         return []
     dic = {}
     entity = list(set(entity))
-    dic[''] = 0
     for i in range(len(entity)):
-        dic[entity[i]] = i + 1
+        dic[entity[i]] = i
     return dic
 
 
@@ -115,25 +113,26 @@ def create_dictionary():
             dic = json.loads(line)
             relation_result = dic['relation_result']
             is_record = False
-            for item in relation_result:
-                if item['relation'] == DISEASE_SYMPTOM:
-                    is_record = True
-                    break
+            # for item in relation_result[::-1]:
+            #     if item['relation'] == DISEASE_SYMPTOM:
+            #         is_record = True
+            #         break
             #   存在疾病症状关系后，再记录实体
-            if is_record:
-                useful_record.append(relation_result)
-                t, a = dic['text'].split('既往史：')
-                # chief_complaint记录患者主诉，textual_info记录患者既往病史
-                chief_complaint.append(t)
-                textual_info.append(a)
-                for item in relation_result:
-                    entity_type_s, entity_value_s = item['subject']['type'], item['subject']['entity']
-                    entity_type_v, entity_value_v = item['object']['type'], item['object']['entity']
-                    if entity_type_s in ENTITIES:
-                        entity[entity_type_s].append(entity_value_s)
-                    if entity_type_v in ENTITIES:
-                        entity[entity_type_v].append(entity_value_v)
-    textual_info_dic = {'': 0}
+            # if is_record:
+            useful_record.append(relation_result)
+            t, a = dic['text'].split('既往史：')[:2]
+
+            # chief_complaint记录患者主诉，textual_info记录患者既往病史
+            chief_complaint.append(t)
+            textual_info.append(a)
+            for item in relation_result:
+                entity_type_s, entity_value_s = item['subject']['type'], item['subject']['entity']
+                entity_type_v, entity_value_v = item['object']['type'], item['object']['entity']
+                if entity_type_s in ENTITIES:
+                    entity[entity_type_s].append(entity_value_s)
+                if entity_type_v in ENTITIES:
+                    entity[entity_type_v].append(entity_value_v)
+    textual_info_dic = {}
     textual_info_set = list(set(textual_info))
     for i in range(len(textual_info_set)):
         textual_info_dic[textual_info_set[i]] = [i + 1]
@@ -142,7 +141,7 @@ def create_dictionary():
     all_text = []
     for t in text_clean:
         all_text.extend(t)
-    dictionary = {'': 0}
+    dictionary = {}
     for k, v in entity.items():
         entity[k] = entity_process(v)
     diseases, symptoms, drugs, surgeries = [], [], [], []
@@ -157,9 +156,18 @@ def create_dictionary():
                 dis.append(entity['疾病有'][i['subject']['entity']])
                 sym.append(entity['症状有'][i['object']['entity']])
             elif i['relation'] == DISEASE_DRUG:
-                drug.append(entity['药物有'][i['object']['entity']])
+                try:
+                    # 标注不合理导致报错，忽略即可
+                    drug.append(entity['药物有'][i['object']['entity']])
+                except KeyError:
+                    print(1)
             elif i['relation'] == DISEASE_SURGERY:
-                surgery.append(entity['手术'][i['object']['entity']])
+                try:
+                    # 标注不合理导致报错，忽略即可
+                    surgery.append(entity['手术'][i['object']['entity']])
+                except KeyError:
+                    print(1)
+
         diseases.append(list(set(dis)))
         symptoms.append(list(set(sym)))
         drugs.append(list(set(drug)))
@@ -167,14 +175,17 @@ def create_dictionary():
     _len = len(diseases)
     dataset = []
     for i in range(_len):
+        if not symptoms[i]:
+            continue
         temp = [symptoms[i], diseases[i], text[i], info[i], [textual_info[i]]]
         dataset.append(temp)
     random.seed(1)
     random.shuffle(dataset)
-    train_data, test_data = dataset[:int(0.8 * _len)], dataset[int(0.8 * _len):]
-
-    pickle.dump(train_data, open('../data/processed_data/train.pkl', 'wb'))
-    pickle.dump(test_data, open('../data/processed_data/test.pkl', 'wb'))
+    train_data, test_data = dataset[:int(0.8 * len(dataset))], dataset[int(0.8 * len(dataset)):]
+    # pickle.dump(train_data, open('../data/processed_data/train.pkl', 'wb'))
+    # pickle.dump(test_data, open('../data/processed_data/test.pkl', 'wb'))
+    pickle.dump(gen_dataset(train_data), open(TMP_DIR[args.dataset] + '/train.pkl', 'wb'))
+    pickle.dump(gen_dataset(test_data), open(TMP_DIR[args.dataset] + '/test.pkl', 'wb'))
 
     print('保存字典....')
     text_inverse = {}
@@ -221,14 +232,59 @@ def create_relation(disease, symptom, drug, surgery, texts, info, entity):
             #   d 代表疾病编号
             symptom_symptom[symptom[index][d]].extend(symptom[index])
 
+    # 创建知识图谱表示训练测试集
+    disease_symptom_set =  [list(set(i)) for i in disease_symptom]
+    disease_drug_set =  [list(set(i)) for i in disease_drug]
+    disease_surgery_set =  [list(set(i)) for i in disease_surgery]
+    disease_texts_set =  [list(set(i)) for i in disease_texts]
+    disease_disease_set =  [list(set(i)) for i in disease_disease]
+    symptom_symptom_set =  [list(set(i)) for i in symptom_symptom]
+
     print('保存关系....')
-    pickle.dump([list(set(i)) for i in disease_symptom], open('../data/processed_data/disease_symptom.pkl', 'wb'))
-    pickle.dump([list(set(i)) for i in disease_drug], open('../data/processed_data/disease_drug.pkl', 'wb'))
-    pickle.dump([list(set(i)) for i in disease_surgery], open('../data/processed_data/disease_surgery.pkl', 'wb'))
-    pickle.dump([list(set(i)) for i in disease_texts], open('../data/processed_data/disease_text.pkl', 'wb'))
-    pickle.dump([list(set(i)) for i in disease_disease], open('../data/processed_data/disease_disease.pkl', 'wb'))
-    pickle.dump([list(set(i)) for i in symptom_symptom], open('../data/processed_data/symptom_symptom.pkl', 'wb'))
+    pickle.dump(disease_symptom_set, open('../data/processed_data/disease_symptom.pkl', 'wb'))
+    pickle.dump(disease_drug_set, open('../data/processed_data/disease_drug.pkl', 'wb'))
+    pickle.dump(disease_surgery_set, open('../data/processed_data/disease_surgery.pkl', 'wb'))
+    pickle.dump(disease_texts_set, open('../data/processed_data/disease_text.pkl', 'wb'))
+    pickle.dump(disease_disease_set, open('../data/processed_data/disease_disease.pkl', 'wb'))
+    pickle.dump(symptom_symptom_set, open('../data/processed_data/symptom_symptom.pkl', 'wb'))
     pickle.dump(info, open('../data/processed_data/textual_info.pkl', 'wb'))
+
+
+
+
+
+    # pickle.dump(disease_symptom_set, open('../data/processed_data/disease_symptom.pkl', 'wb'))
+    # pickle.dump(disease_drug_set, open('../data/processed_data/disease_drug.pkl', 'wb'))
+    # pickle.dump(disease_surgery_set, open('../data/processed_data/disease_surgery.pkl', 'wb'))
+    # pickle.dump(disease_texts_set, open('../data/processed_data/disease_text.pkl', 'wb'))
+    # pickle.dump(disease_disease_set, open('../data/processed_data/disease_disease.pkl', 'wb'))
+    # pickle.dump(symptom_symptom_set, open('../data/processed_data/symptom_symptom.pkl', 'wb'))
+    # pickle.dump(info, open('../data/processed_data/textual_info.pkl', 'wb'))
+
+
+    # print('保存关系....')
+    # pickle.dump(disease_symptom_set[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/disease_symptom.pkl', 'wb'))
+    # pickle.dump(disease_drug_set[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/disease_drug.pkl', 'wb'))
+    # pickle.dump(disease_surgery_set[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/disease_surgery.pkl', 'wb'))
+    # pickle.dump(disease_texts_set[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/disease_text.pkl', 'wb'))
+    # pickle.dump(disease_disease_set[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/disease_disease.pkl', 'wb'))
+    # pickle.dump(symptom_symptom_set[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/symptom_symptom.pkl', 'wb'))
+    # pickle.dump(info[int(0.9 * len(disease_symptom_set)):], open('../data/KGTestData/textual_info.pkl', 'wb'))
+def gen_dataset(data):
+    """
+
+    :param data: 多个疾病对应多个症状
+    :return: 症状疾病的一对一关系
+    """
+    result = []
+    for d in data:
+        symptoms,disease, word_id,info_id,info = d
+        for s in symptoms:
+            for dis in disease:
+                result.append([[s],[dis],word_id,info_id,info])
+    return result
+
+
 
 
 if __name__ == '__main__':

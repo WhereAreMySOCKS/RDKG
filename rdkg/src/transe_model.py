@@ -1,6 +1,8 @@
 from __future__ import absolute_import, division, print_function
 
 import math
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 import jieba
 from easydict import EasyDict as edict
@@ -21,17 +23,18 @@ def _get_attribute_len(attribute):
 class KnowledgeEmbedding(nn.Module):
     def __init__(self, dataset, args):
         super(KnowledgeEmbedding, self).__init__()
-
+        self.is_cluster_neg = True
+        self.dataset =  dataset
+        if args.dataset == Aier_EYE:
+            self.attributes_num = self.dataset.word.vocab_size
+        self.enhanced_type = args.enhanced_type
+        self.embedding_type = args.embedding_type
         self.embed_size = args.embed_size
         self.num_neg_samples = args.num_neg_samples
         self.device = args.device
         self.l2_lambda = args.l2_lambda
-        self.relu = nn.ReLU()
-        if args.dataset == Aier_EYE:
-            self.attributes_num = dataset.word.vocab_size
-        self.enhanced_type = args.enhanced_type
-        self.embedding_type = args.embedding_type
 
+        self.relu = nn.ReLU()
         if self.enhanced_type == 'bert':
             self.bert = AutoModel.from_pretrained('cyclone/simcse-chinese-roberta-wwm-ext')
             self.pooler = nn.Linear(768, self.embed_size)
@@ -75,6 +78,8 @@ class KnowledgeEmbedding(nn.Module):
         for e in self.entities:
             embed = self._entity_embedding(self.entities[e].vocab_size)
             setattr(self, e, embed)
+            if self.is_cluster_neg:
+                setattr(self, e+"_cluster", (embed,torch.zeros(embed.weight.shape[0]))) # 元祖记录簇类索引
         # Initialize relation embeddings and relation biases.
 
         self.relations = edict(
@@ -171,11 +176,11 @@ class KnowledgeEmbedding(nn.Module):
         distrib = torch.FloatTensor(distrib).to(self.device)
         return distrib
 
-    def forward(self, batch_idxs):
-        loss = self.compute_loss(batch_idxs)
+    def forward(self, epoch,batch_idxs):
+        loss = self.compute_loss(epoch,batch_idxs)
         return loss
 
-    def compute_loss(self, batch_idxs):
+    def compute_loss(self, epoch,batch_idxs):
         have_symptom_idxs = batch_idxs[:, 0]
         have_disease_idxs = batch_idxs[:, 1]
         word_idxs = batch_idxs[:, 2]
@@ -189,45 +194,45 @@ class KnowledgeEmbedding(nn.Module):
         regularizations = []
 
         # have_symptom + disease_symptom -> have_disease
-        up_loss, up_embeds = self.neg_loss('have_symptom', 'disease_symptom', 'have_disease', have_symptom_idxs,
+        up_loss, up_embeds = self.neg_loss(epoch,'have_symptom', 'disease_symptom', 'have_disease', have_symptom_idxs,
                                            have_disease_idxs, (attribute_idxs, attribute_texts))
         regularizations.extend(up_embeds)
         loss = up_loss
 
         # have_symptom + mentions -> word
-        uw_loss, uw_embeds = self.neg_loss('have_symptom', 'mentions', 'word', have_symptom_idxs, word_idxs,
+        uw_loss, uw_embeds = self.neg_loss(epoch,'have_symptom', 'mentions', 'word', have_symptom_idxs, word_idxs,
                                            (attribute_idxs, attribute_texts))
         regularizations.extend(uw_embeds)
         loss += uw_loss
 
         # have_disease + described_as -> word
-        pw_loss, pw_embeds = self.neg_loss('have_disease', 'described_as', 'word', have_disease_idxs, word_idxs,
+        pw_loss, pw_embeds = self.neg_loss(epoch,'have_disease', 'described_as', 'word', have_disease_idxs, word_idxs,
                                            (attribute_idxs, attribute_texts))
         regularizations.extend(pw_embeds)
         loss += pw_loss
 
         # have_disease + disease_surgery -> surgery
-        pb_loss, pb_embeds = self.neg_loss('have_disease', 'disease_surgery', 'surgery', have_disease_idxs,
+        pb_loss, pb_embeds = self.neg_loss(epoch,'have_disease', 'disease_surgery', 'surgery', have_disease_idxs,
                                            surgery_idxs, (attribute_idxs, attribute_texts))
 
         regularizations.extend(pb_embeds)
         loss += pb_loss
 
         # have_disease + disease_drug -> drug
-        pc_loss, pc_embeds = self.neg_loss('have_disease', 'disease_drug', 'drug', have_disease_idxs,
+        pc_loss, pc_embeds = self.neg_loss(epoch,'have_disease', 'disease_drug', 'drug', have_disease_idxs,
                                            drug_idxs, (attribute_idxs, attribute_texts))
 
         regularizations.extend(pc_embeds)
         loss += pc_loss
 
         # have_disease + related_disease -> have_disease
-        pr1_loss, pr1_embeds = self.neg_loss('have_disease', 'related_disease', 'have_disease', have_disease_idxs,
+        pr1_loss, pr1_embeds = self.neg_loss(epoch,'have_disease', 'related_disease', 'have_disease', have_disease_idxs,
                                              related_disease_idxs, (attribute_idxs, attribute_texts))
         regularizations.extend(pr1_embeds)
         loss += pr1_loss
 
         # have_symptom + related_symptom -> have_symptom
-        pr2_loss, pr2_embeds = self.neg_loss('have_symptom', 'related_symptom', 'have_symptom', have_symptom_idxs,
+        pr2_loss, pr2_embeds = self.neg_loss(epoch,'have_symptom', 'related_symptom', 'have_symptom', have_symptom_idxs,
                                              relate_symptom_idxs, (attribute_idxs, attribute_texts))
         regularizations.extend(pr2_embeds)
         loss += pr2_loss
@@ -240,9 +245,10 @@ class KnowledgeEmbedding(nn.Module):
 
         return loss
 
-    def neg_loss(self, entity_head, relation, entity_tail, entity_head_idxs, entity_tail_idxs, attributes):
+    def neg_loss(self, epoch,entity_head, relation, entity_tail, entity_head_idxs, entity_tail_idxs, attributes):
         entity_head_embedding = getattr(self, entity_head)  # nn.Embedding
         entity_tail_embedding = getattr(self, entity_tail)
+
         entity_head_vec = entity_head_embedding(
             torch.from_numpy(entity_head_idxs.astype(int)).to(self.device))
         entity_tail_vec = entity_tail_embedding(
@@ -269,9 +275,26 @@ class KnowledgeEmbedding(nn.Module):
         relation_vec = getattr(self, relation)  # [1, embed_size]
         relation_bias_embedding = getattr(self, relation + '_bias')  # nn.Embedding
         entity_tail_distrib = self.relations[relation].et_distrib  # [vocab_size]
-        neg_sample_idx = torch.multinomial(entity_tail_distrib, self.num_neg_samples, replacement=True).view(-1)
-        zeros = (np.zeros((len(neg_sample_idx), attr_num), dtype=int), '无记录')
-        neg_vec = entity_tail_embedding(neg_sample_idx) + self._get_attribute_vec(zeros, self.enhanced_type)
+
+        entity_head_idxs = np.array(entity_head_idxs, dtype=int)
+        if relation not in ['mentions','described_as']:
+            true_tail = np.array(getattr(self.dataset, relation)["data"])[entity_head_idxs]
+        else:
+            true_tail = np.array([])
+        # 负采样
+        if self.is_cluster_neg is True and (relation not in ['mentions','described_as']):
+            neg_sample_idx = self.cluster_neg_sample(epoch,entity_tail_vec, entity_tail, true_tail)
+            neg_vec = entity_tail_embedding.weight.data[neg_sample_idx]
+        else:
+            # 随机采样
+            true_tail = list(set([lst for sublist in true_tail for lst in sublist]))
+            neg_sample_idx = torch.multinomial(entity_tail_distrib, self.num_neg_samples, replacement=True).view(-1)
+            neg_sample_idx = torch.tensor(list(set(neg_sample_idx.tolist()) - set(true_tail))).to(self.device)
+            if len(neg_sample_idx) == 0:
+                neg_sample_idx = torch.multinomial(entity_tail_distrib, self.num_neg_samples, replacement=True).view(-1)
+            zeros = (np.zeros((self.num_neg_samples, attr_num), dtype=int), '无记录')
+            neg_vec = (entity_tail_embedding(neg_sample_idx[0]) + self._get_attribute_vec(zeros, self.enhanced_type)).unsqueeze(0).repeat(batch_size, 1, 1)
+
         relation_bias = relation_bias_embedding(torch.from_numpy(entity_tail_idxs.astype(int)).to(self.device)).squeeze(1)
         #   先属性嵌入，再TranR映射
         if self.embedding_type == 'TransR':
@@ -294,9 +317,74 @@ class KnowledgeEmbedding(nn.Module):
         pos_vec = entity_tail_vec.unsqueeze(1)  # [batch_size, 1, embed_size]
         pos_logits = torch.bmm(pos_vec, example_vec).squeeze() + relation_bias  # [batch_size]
         pos_loss = -pos_logits.sigmoid().log()  # [batch_size]
-        neg_logits = torch.mm(example_vec.squeeze(2), neg_vec.transpose(1, 0).contiguous())
+        neg_logits = torch.bmm(neg_vec, example_vec).squeeze(-1)
         neg_logits += relation_bias.unsqueeze(1)  # [batch_size, num_samples]
         neg_loss = -neg_logits.neg().sigmoid().log().sum(1)  # [batch_size]
 
         loss = (pos_loss + neg_loss).mean()
         return loss, [entity_head_vec, entity_tail_vec, neg_vec]
+
+    def cluster_neg_sample(self, epoch,tail_vec, tail_type,true_tail):
+        """
+        算法思路：
+            1。 对每一类实体embedding，分别进行k-means聚类
+            2。 在尾实体所在簇内随机采样
+            3。 过滤采样结果，排除真实三元组
+        :param head:
+        :param tail_type:
+        :return:
+        """
+        # 生成簇类
+        embedding, cluster_idx = getattr(self, tail_type + '_cluster')
+        embedding_data = embedding.weight.data
+        if epoch % 50 == 0:
+        # if 500 % 50 == 0:
+            k, max_iters = 3, 100
+            cluster_idx,cluster_indices = k_means(embedding_data, k, max_iters)
+            setattr(self, tail_type + "_cluster", (embedding, cluster_idx))  # 元祖记录簇类索引
+        else:
+            cluster_indices = generate_cluster_indices(cluster_idx)
+        # 计算余弦相似度实现查找
+        similarity_matrix = torch.matmul(tail_vec, embedding_data.T)
+        # 找到每个tail_vec向量在vec中的最佳匹配索引
+        idx = torch.argmax(similarity_matrix, dim=1)
+        cluster_record = getattr(self, tail_type + "_cluster")[1][idx]
+        sampled_values = []
+        for idx in range(len(cluster_record)):
+            i = cluster_record[idx]
+            tmp = []
+            while len(tmp) < self.num_neg_samples:
+                sampled_indices = torch.randperm(cluster_indices[i].numel())[0]
+                if sampled_indices not in true_tail[idx]:
+                    tmp.append(cluster_indices[i][sampled_indices])
+            sampled_values.append(torch.stack(tmp))
+        sampled_values = torch.stack(sampled_values)
+        return sampled_values
+def generate_cluster_indices(labels):
+    cluster_indices = [torch.nonzero(labels == i, as_tuple=False).squeeze() for i in range(labels.max().item() + 1)]
+    return cluster_indices
+def k_means(data, k,max_iters=100):
+    # 随机初始化聚类中心
+    centroids = data[
+        torch.randperm(data.shape[0])[:k]  # 从 0 到 shape[0] 的随机排列中选择前 k 个索引
+    ]
+    for _ in range(max_iters):
+        # 计算每个数据点到聚类中心的距离
+        distances = torch.norm(data.unsqueeze(1) - centroids, dim=2)
+
+        # 分配每个数据点到最近的聚类中心
+        labels = torch.argmin(distances, dim=1)
+
+        # 更新聚类中心为每个簇的平均值
+        new_centroids = torch.stack([data[labels == i].mean(dim=0) for i in range(k)])
+
+        # 如果聚类中心不再改变，结束迭代
+        if torch.all(torch.eq(centroids, new_centroids)):
+            break
+
+        centroids = new_centroids
+
+    # 为每个簇获取所有数据点的索引
+    cluster_indices = [torch.nonzero(labels == i, as_tuple=False).squeeze() for i in range(k)]
+
+    return labels, cluster_indices

@@ -1,16 +1,8 @@
 from __future__ import absolute_import, division, print_function
 
-import math
-import pickle
-
-import jieba
 from easydict import EasyDict as edict
 import torch.nn as nn
-from gensim.models import KeyedVectors
-from transformers import AutoModel, AutoTokenizer
-from src.utils import *
-
-from src.utils import Aier_EYE
+from rdkg.src.utils import *
 
 
 def _get_attribute_len(attribute):
@@ -32,15 +24,7 @@ class KnowledgeEmbedding(nn.Module):
         self.relu = nn.ReLU()
         self.enhanced_type = args.enhanced_type
         self.embedding_type = args.embedding_type
-
-        # if self.enhanced_type == 'bert':
-        #     self.bert = AutoModel.from_pretrained('cyclone/simcse-chinese-roberta-wwm-ext')
-        #     self.pooler = nn.Linear(768, self.embed_size)
-        #     self.tokenizer = AutoTokenizer.from_pretrained('cyclone/simcse-chinese-roberta-wwm-ext')
-        # elif self.enhanced_type == 'embedding':
-        #     embed = self._entity_embedding(self.attributes_num)
-        #     setattr(self, 'attribute', embed)
-
+        self.cluster_neg_sample = True # 簇类负采样
         # Initialize entity embeddings.
         self.entities = edict(
             have_disease=edict(vocab_size=dataset.have_disease.vocab_size),
@@ -53,6 +37,9 @@ class KnowledgeEmbedding(nn.Module):
         for e in self.entities:
             embed = self._entity_embedding(self.entities[e].vocab_size)
             setattr(self, e, embed)
+            if self.cluster_neg_sample:
+                setattr(self, e+"_cluster", (embed,torch.zeros(embed.size(0)))) # 元祖记录簇类索引
+
         # Initialize relation embeddings and relation biases.
 
         self.relations = edict(
@@ -210,7 +197,7 @@ class KnowledgeEmbedding(nn.Module):
         regularizations.extend(pr1_embeds)
         loss += pr1_loss
 
-        # have_symptom + related_symptom -> have_symptom
+        #
         pr2_loss, pr2_embeds = self.neg_loss('have_symptom', 'related_symptom', 'have_symptom', have_symptom_idxs,
                                              relate_symptom_idxs, (attribute_idxs, attribute_texts))
         regularizations.extend(pr2_embeds)
@@ -254,6 +241,9 @@ class KnowledgeEmbedding(nn.Module):
         relation_bias_embedding = getattr(self, relation + '_bias')  # nn.Embedding
         entity_tail_distrib = self.relations[relation].et_distrib  # [vocab_size]
         neg_sample_idx = torch.multinomial(entity_tail_distrib, self.num_neg_samples, replacement=True).view(-1)
+        # 新加的负采样技术
+
+
         zeros = (np.zeros((len(neg_sample_idx), attr_num), dtype=int), '无记录')
         neg_vec = entity_tail_embedding(neg_sample_idx) + self._get_attribute_vec(zeros, self.model_type)
         relation_bias = relation_bias_embedding(torch.from_numpy(entity_tail_idxs.astype(int)).to(self.device)).squeeze(1)
@@ -284,3 +274,64 @@ class KnowledgeEmbedding(nn.Module):
 
         loss = (pos_loss + neg_loss).mean()
         return loss, [entity_head_vec, entity_tail_vec, neg_vec]
+
+    def neg_sample(self,tail_vec,tail_type):
+        """
+        算法思路：
+            1。 对每一类实体embedding，分别进行k-means聚类
+            2。 在尾实体所在簇内随机采样
+            3。 过滤采样结果，排除真实三元组
+        :param head:
+        :param tail_type:
+        :return:
+        """
+        # 生成簇类
+        embedding,cluster_idx = getattr(self, tail_type+'_cluster')
+        if epoch % 50 == 0:
+            k, max_iters = 3, 100
+            labels = k_means(embedding,k,100)
+            setattr(self, tail_type + "_cluster", (embedding, labels))  # 元祖记录簇类索引
+
+        # 在 data 中查找与 t 完全匹配的子张量的簇id
+        for i in range(embedding.size(0)):
+            if torch.equal(embedding[i], tail_vec):
+                tail_cluster_idx  = cluster_idx[i]
+                break
+        cluster = []
+        # 获取簇
+        for i in range(len(cluster_idx)):
+            if cluster_idx[i] == tail_cluster_idx:
+                cluster.append(embedding[i])
+
+        #  从簇中抽取尾实体
+        indices = torch.randperm(torch.stack(cluster).size(0))
+        extracted = embedding[indices[:min(self.num_neg_samples, embedding.size(0))]]
+        while extracted.size(0) < self.num_neg_samples:
+            indices = torch.randperm(embedding.size(0))
+            extracted = torch.cat([extracted, embedding[indices[:min(self.num_neg_samples - extracted.size(0), embedding.size(0))]]])
+        # 过滤真实尾实体
+
+        return extracted
+
+
+def k_means(data, k, max_iters=100):
+    # 随机初始化聚类中心
+    centroids = data[np.random.choice(data.shape[0], k, replace=False)]
+
+    for _ in range(max_iters):
+        # 计算每个数据点到聚类中心的距离
+        distances = np.linalg.norm(data[:, np.newaxis] - centroids, axis=2)
+
+        # 分配每个数据点到最近的聚类中心
+        labels = np.argmin(distances, axis=1)
+
+        # 更新聚类中心为每个簇的平均值
+        new_centroids = np.array([data[labels == i].mean(axis=0) for i in range(k)])
+
+        # 如果聚类中心不再改变，结束迭代
+        if np.all(centroids == new_centroids):
+            break
+
+        centroids = new_centroids
+
+    return labels

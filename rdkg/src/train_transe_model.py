@@ -1,15 +1,17 @@
-from __future__ import absolute_import, division, print_function
 import os
 import argparse
 import jieba
 import torch.optim
 from gensim.models import KeyedVectors
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModel
+import sys
+sys.path.extend(['/home/guoshipeng/RDKG/rdkg','/home/guoshipeng/RDKG','/home/guoshipeng/RDKG/rdkg/src'])
 from transe_model import KnowledgeEmbedding
 from utils import *
 from data_utils import DataLoader
 
 logger = None
+
 
 
 def train(args):
@@ -39,11 +41,11 @@ def train(args):
     steps = 0
     smooth_loss = 0.0
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range( args.epochs):
         dataloader.reset()
         while dataloader.has_next():
             # Set learning rate.
-            lr = args.lr * max(1e-4, 1.0 - dataloader.finished_word_num / float(words_to_train))
+            lr = args.lr * max(1e-4, 1.0 - dataloader.finished_word_num / float(words_to_train * 5))
             for pg in optimizer.param_groups:
                 pg['lr'] = lr
 
@@ -51,7 +53,7 @@ def train(args):
             batch_idxs = dataloader.get_batch
             # Train model.
             optimizer.zero_grad()
-            train_loss = model(batch_idxs)
+            train_loss = model(epoch,batch_idxs)
             train_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
             optimizer.step()
@@ -59,7 +61,7 @@ def train(args):
 
             steps += 1
             if steps % args.steps_per_checkpoint == 0:
-                logger.info('Epoch: {:02d} | '.format(epoch) +
+                logger.info('Epoch: {:02d} | '.format(epoch+1) +
                             'Words: {:d}/{:d} | '.format(dataloader.finished_word_num, words_to_train) +
                             'Lr: {:.5f} | '.format(lr) +
                             'Smooth loss: {:.5f}'.format(smooth_loss))
@@ -196,19 +198,18 @@ def main():
     parser.add_argument('--epochs', type=int, default=800, help='number of epochs to train.')
     parser.add_argument('--batch_size', type=int, default=128, help='batch size.')
     parser.add_argument('--enhanced_type', type=str, default='none', help='model type. Including none,embedding,w2v')
-    parser.add_argument('--lr', type=float, default=0.2, help='learning rate.')
+    parser.add_argument('--lr', type=float, default=0.001, help='learning rate.')
     parser.add_argument('--weight_decay', type=float, default=0, help='weight decay for adam.')
     parser.add_argument('--l2_lambda', type=float, default=0, help='l2 lambda')
     parser.add_argument('--max_grad_norm', type=float, default=10.0, help='Clipping gradient.')
     parser.add_argument('--embed_size', type=int, default=100, help='knowledge embedding size.')
     parser.add_argument('--num_neg_samples', type=int, default=10, help='number of negative samples.')
-    parser.add_argument('--steps_per_checkpoint', type=int, default=1000, help='Number of steps for checkpoint.')
-    parser.add_argument('--embedding_type', type=str, default='TransE',
+    parser.add_argument('--steps_per_checkpoint', type=int, default=100, help='Number of steps for checkpoint.')
+    parser.add_argument('--embedding_type', type=str, default='TransR',
                         help='Embedding model type,TransR,TransE or TransH')
 
     args = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-    args.device = torch.device('cuda:0') if torch.cuda.is_available() else 'cpu'
+    args.device = torch.device("cuda:"+args.gpu) if torch.cuda.is_available() else 'cpu'
     args.log_dir = '{}/{}'.format(TMP_DIR[args.dataset], args.name)
     if not os.path.isdir(args.log_dir):
         os.makedirs(args.log_dir)

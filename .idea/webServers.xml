@@ -3,7 +3,7 @@
   <component name="WebServers">
     <option name="servers">
       <webServer id="cb83a725-3d93-40bf-9230-f7eda3741fef" name="A100(项目级别)">
-        <fileTransfer accessType="SFTP" host="10.0.87.17" port="22" sshConfigId="6020e08c-d266-450a-bc5b-a2867a35ba6a" sshConfig="A100" />
+        <fileTransfer accessType="SFTP" host="10.0.87.17" port="22" sshConfigId="6020e08c-d266-450a-bc5b-a2867a35ba6a" sshConfig="guoshipeng@10.0.87.17:22 password" />
       </webServer>
     </option>
   </component>

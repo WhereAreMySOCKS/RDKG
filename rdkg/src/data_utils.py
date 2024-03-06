@@ -4,18 +4,20 @@ import pickle
 from easydict import EasyDict as edict
 import random
 
+from rdkg.src.utils import TMP_DIR
+
 
 class AierEyeDataset(object):
     """This class is used to load raw_data files and save in the instance."""
 
     def __init__(self, data_dir, set_name='train', word_sampling_rate=0):
         self.data_dir = data_dir
-        if not self.data_dir.endswith('/'):
-            self.data_dir += '/'
+        # if not self.data_dir.endswith('/'):
+        #     self.data_dir += '/'
         if data_dir == 'Medical':
             self.train_file = 'medical_data/tmp/medical_data/' + set_name + '.pkl'
         else:
-            self.train_file = '../data/processed_data/' + set_name + '.pkl'
+            self.train_file = TMP_DIR[self.data_dir] + set_name + '.pkl'
         self.load_entities()
         self.load_disease_relations()
         self.load_train_data()

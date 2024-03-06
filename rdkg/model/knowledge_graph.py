@@ -1,6 +1,4 @@
-import pickle
-
-from src.utils import *
+from rdkg.src.utils import *
 
 
 class KnowledgeGraph(object):
@@ -57,8 +55,11 @@ class KnowledgeGraph(object):
             if len(remained_words) <= 0:
                 continue
             # Add edges.
-            self._add_edge(HAVE_SYMPTOM, sym_id, DISEASE_SYMPTOM, HAVE_DISEASE, dis_id)
-            num_edges += 2
+            try:
+                self._add_edge(HAVE_SYMPTOM, sym_id, DISEASE_SYMPTOM, HAVE_DISEASE, dis_id)
+                num_edges += 2
+            except:
+                print(1)
             for wid in remained_words:
                 self._add_edge(HAVE_SYMPTOM, sym_id, MENTION, WORD, wid)
                 self._add_edge(HAVE_DISEASE, dis_id, DESCRIBED_AS, WORD, wid)

@@ -14,25 +14,18 @@ import torch
 NODE_LIMIT = False  # 设置为True时，前两个节点限制为symptom
 
 # Dataset names.
-BEAUTY = 'beauty'
-CELL = 'cell'
-CLOTH = 'cloth'
-CD = 'cd'
 Aier_EYE = 'Aier_Eye'
 Medical = 'Medical'
 
 # Dataset directories.
 DATASET_DIR = {
-    Aier_EYE: './raw_data/Aier_Eye',
+    Aier_EYE: 'Aier_Eye',
     Medical: 'Medical',
-    CELL: './raw_data/Amazon_Cellphones',
-    CLOTH: './raw_data/Amazon_Clothing',
-    CD: './raw_data/Amazon_CDs',
 }
 
 # Model result directories.
 TMP_DIR = {
-    Aier_EYE: '../tmp/Aier_Eye',
+    Aier_EYE: '../tmp/Aier_Eye/',
     Medical: 'medical_data/tmp/medical_data',
 }
 
